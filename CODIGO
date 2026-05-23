@@ -1,0 +1,208 @@
+#include <WiFi.h>
+#include <WebServer.h>
+#include <DNSServer.h>
+
+// ====== CONFIGURACIÓN WIFI (MODO CLIENTE) ======
+// Aquí el ESP32 se conecta a una red WiFi externa (internet real)
+const char* STA_SSID = " S24+ de Victoria";
+const char* STA_PASS = " qdzdby9tv3rrcp5";
+
+// ====== RED DEL PORTAL (PUNTO DE ACCESO) ======
+// Red que crea el ESP32 para que el usuario se conecte
+const char* AP_SSID  = "Hotel Estres - WiFi";
+
+// Solo como referencia del internet conectado
+const char* INTERNET_SSID = "S24+ de Victoria";
+
+// ====== SERVICIOS DE RED ======
+DNSServer  dnsServer;   
+WebServer  server(80); 
+
+// IP del portal cautivo (red local del ESP32)
+IPAddress  AP_IP(192, 168, 4, 1);
+IPAddress  AP_MASK(255, 255, 255, 0);
+
+// ====== PÁGINA PRINCIPAL (PORTAL CAUTIVO) ======
+// Se muestra cuando el usuario se conecta a la red del ESP32
+const char INDEX_HTML[] PROGMEM = R"rawliteral(
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Hotel Estres</title>
+<style>
+  body { font-family: Arial, sans-serif; text-align: center; padding: 40px 20px; background: #f4f4f4; }
+  h2 { color: #333; }
+  input { display: block; width: 100%; max-width: 300px; margin: 10px auto; padding: 10px; font-size: 16px; border: 1px solid #ccc; border-radius: 6px; }
+  button { margin-top: 15px; padding: 12px 30px; background: #b8860b; color: white; border: none; border-radius: 6px; font-size: 16px; cursor: pointer; }
+</style>
+</head>
+<body>
+  <h2>Hotel Estrés</h2>
+  <p>Ingresa tus datos para acceder a internet</p>
+
+  <!-- Formulario del usuario -->
+  <form action="/connect" method="GET">
+    <input type="text" name="nombre" placeholder="Tu nombre" required>
+    <input type="number" name="cuarto" placeholder="Número de cuarto" required>
+    <button type="submit">Conectarse</button>
+  </form>
+</body>
+</html>
+)rawliteral";
+
+// ====== PÁGINA DE ÉXITO ======
+// Se muestra después de enviar el formulario
+const char WELCOME_HTML[] PROGMEM = R"rawliteral(
+
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+<title>Conectando...</title>
+
+<style>
+body{
+  font-family:Arial;
+  text-align:center;
+  background:#f4f4f4;
+  padding-top:50px;
+}
+
+.box{
+  background:white;
+  display:inline-block;
+  padding:30px;
+  border-radius:12px;
+  box-shadow:0 4px 15px rgba(0,0,0,0.2);
+  max-width:350px;
+}
+
+h1{
+  color:#b8860b;
+}
+
+p{
+  color:#333;
+  font-size:16px;
+}
+</style>
+
+</head>
+
+<body>
+
+<div class="box">
+
+<h1>Acceso concedido</h1>
+
+<p>Redirigiendo a google...</p>
+
+</div>
+
+<script>
+// Redirección automática a internet (Google)
+setTimeout(function(){
+  window.location.href = "https://www.google.com";
+},3000);
+</script>
+
+</body>
+</html>
+
+)rawliteral";
+
+// ====== REDIRECCIÓN DEL PORTAL ======
+// Fuerza al usuario a volver al portal si entra a otra página
+void handleRedirect() {
+  server.sendHeader("Location", "http://192.168.4.1/", true);
+  server.send(302, "text/plain", "");
+}
+
+// Página principal del portal
+void handleRoot() {
+  server.send_P(200, "text/html", INDEX_HTML);
+}
+
+// Procesa el formulario del usuario
+void handleConnect() {
+  String nombre = server.arg("nombre");
+  String cuarto  = server.arg("cuarto");
+
+  // Validación 
+  if (nombre.isEmpty() || cuarto.isEmpty()) {
+    handleRedirect();
+    return;
+  }
+
+  Serial.println("\n--- INFORMACIÓN DEL HUESPED ---");
+  Serial.print("Huésped: "); Serial.println(nombre);
+  Serial.print("Habitacion:  "); Serial.println(cuarto);
+
+  // Muestra página de éxito
+  server.send(200, "text/html", WELCOME_HTML);
+}
+
+void setup() {
+  Serial.begin(115200);
+  delay(2000);
+  Serial.println("Iniciando...");
+
+  // Modo dual: AP + STA
+  WiFi.mode(WIFI_AP_STA);
+
+  // Conexión a red externa (internet)
+  WiFi.begin(STA_SSID, STA_PASS);
+  Serial.print("Conectando...");
+
+  int intentos = 0;
+  while (WiFi.status() != WL_CONNECTED && intentos < 20) {
+    delay(500);
+    Serial.print(".");
+    intentos++;
+  }
+
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("\nCONECTADO!");
+  } else {
+    Serial.println("\n[STA] No se pudo conectar, solo AP activo.");
+  }
+
+  // Crear red del portal cautivo
+  WiFi.softAPConfig(AP_IP, AP_IP, AP_MASK);
+  WiFi.softAP(AP_SSID);
+  Serial.println("[AP] Red creada: " + String(AP_SSID));
+
+  // DNS para redirigir todo al portal
+  dnsServer.start(53, "*", AP_IP);
+
+  // Rutas del servidor web
+  server.on("/", HTTP_GET, handleRoot);
+  server.on("/connect", HTTP_GET, handleConnect);
+  server.on("/generate_204", HTTP_GET, handleRedirect);
+  server.on("/hotspot-detect.html", HTTP_GET, handleRedirect);
+  server.on("/connecttest.txt", HTTP_GET, handleRedirect);
+  server.on("/ncsi.txt", HTTP_GET, handleRedirect);
+  server.onNotFound(handleRedirect);
+
+  server.begin();
+}
+
+void loop() {
+  dnsServer.processNextRequest();
+  server.handleClient();
+
+  // Reintento de conexión si se pierde el WiFi externo
+  static unsigned long lastCheck = 0;
+  if (millis() - lastCheck > 5000) {
+    lastCheck = millis();
+
+    if (WiFi.status() != WL_CONNECTED) {
+      Serial.println("[STA] Reconectando...");
+      WiFi.reconnect();
+    }
+  }
+}
